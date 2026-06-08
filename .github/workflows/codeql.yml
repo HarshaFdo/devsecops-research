@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  analyze:
+  analyze-python:
     name: Analyze Python
     runs-on: ubuntu-latest
     permissions:
@@ -21,9 +21,38 @@ jobs:
       uses: github/codeql-action/init@v3
       with:
         languages: python
+        source-root: apps/vulnerable-api
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
-# Run 2
 
-# Run 3
+  analyze-java:
+    name: Analyze Java
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Java
+      uses: actions/setup-java@v3
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: java
+        source-root: apps/webgoat-source
+
+    - name: Build WebGoat
+      run: |
+        cd apps/webgoat-source
+        mvn clean package -DskipTests
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
