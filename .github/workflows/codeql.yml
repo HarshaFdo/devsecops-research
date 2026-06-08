@@ -51,7 +51,9 @@ jobs:
     - name: Build WebGoat
       run: |
         cd apps/webgoat-source
+        ls -la
         mvn clean package -DskipTests
+      working-directory: ${{ github.workspace }}
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
