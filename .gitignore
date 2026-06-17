@@ -1,0 +1,4 @@
+codeql-db/
+tools/codeql/codeql-bundle.tar.gz
+tools/codeql/codeql/
+*.sarif
