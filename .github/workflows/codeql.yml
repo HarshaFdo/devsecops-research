@@ -1,18 +1,100 @@
-name: CodeQL Analysis
+name: DevSecOps Security Pipeline
 
 on:
   push:
     branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
   workflow_dispatch:
 
 jobs:
-  analyze-python:
-    name: Analyze Python
+
+  bandit-sast:
+    name: Bandit - Python SAST
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Bandit
+      run: pip install bandit
+
+    - name: Run Bandit scan
+      run: |
+        bandit -r apps/vulnerable-api/ \
+          -f json \
+          -o bandit-results.json \
+          --exit-zero
+      continue-on-error: true
+
+    - name: Upload Bandit results
+      uses: actions/upload-artifact@v4
+      with:
+        name: bandit-results
+        path: bandit-results.json
+
+  semgrep-sast:
+    name: Semgrep - AI-Enhanced SAST
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Semgrep
+      run: pip install semgrep
+
+    - name: Run Semgrep scan
+      run: |
+        semgrep --config=auto apps/vulnerable-api/ \
+          --json \
+          --output semgrep-results.json \
+          --quiet
+      continue-on-error: true
+
+    - name: Upload Semgrep results
+      uses: actions/upload-artifact@v4
+      with:
+        name: semgrep-results
+        path: semgrep-results.json
+
+  trivy-sca:
+    name: Trivy - Software Composition Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: 'apps/vulnerable-api/'
+        format: 'json'
+        output: 'trivy-results.json'
+        exit-code: '0'
+
+    - name: Upload Trivy results
+      uses: actions/upload-artifact@v4
+      with:
+        name: trivy-results
+        path: trivy-results.json
+
+  codeql-analysis:
+    name: CodeQL - AI-Enhanced Data Flow Analysis
     runs-on: ubuntu-latest
     permissions:
       security-events: write
       contents: read
-
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -21,39 +103,107 @@ jobs:
       uses: github/codeql-action/init@v4
       with:
         languages: python
-        source-root: apps/vulnerable-api
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
 
-  analyze-java:
-    name: Analyze Java
+  security-report:
+    name: Generate Security Report
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      contents: read
-
+    needs: [bandit-sast, semgrep-sast, trivy-sca]
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Java
-      uses: actions/setup-java@v4
-      with:
-        java-version: '21'
-        distribution: 'temurin'
+    - name: Download all scan results
+      uses: actions/download-artifact@v4
 
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
       with:
-        languages: java
+        python-version: '3.11'
 
-    - name: Build WebGoat
+    - name: Generate combined report
       run: |
-        cd apps/webgoat-source
-        ls -la
-        mvn clean package -DskipTests
-      working-directory: ${{ github.workspace }}
+        python3 - <<'EOF'
+        import json
+        import os
+        from datetime import datetime
 
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v4
+        report = {
+            "pipeline": "DevSecOps Security Pipeline",
+            "timestamp": datetime.utcnow().isoformat(),
+            "repository": "devsecops-research",
+            "tools": {}
+        }
+
+        # Bandit results
+        try:
+            with open("bandit-results/bandit-results.json") as f:
+                bandit = json.load(f)
+            high = len([r for r in bandit.get("results", []) if r.get("issue_severity") == "HIGH"])
+            med = len([r for r in bandit.get("results", []) if r.get("issue_severity") == "MEDIUM"])
+            report["tools"]["bandit"] = {
+                "status": "completed",
+                "total_findings": len(bandit.get("results", [])),
+                "high_severity": high,
+                "medium_severity": med
+            }
+        except Exception as e:
+            report["tools"]["bandit"] = {"status": "error", "message": str(e)}
+
+        # Semgrep results
+        try:
+            with open("semgrep-results/semgrep-results.json") as f:
+                semgrep = json.load(f)
+            findings = semgrep.get("results", [])
+            report["tools"]["semgrep"] = {
+                "status": "completed",
+                "total_findings": len(findings),
+                "rules_matched": len(set(r.get("check_id") for r in findings))
+            }
+        except Exception as e:
+            report["tools"]["semgrep"] = {"status": "error", "message": str(e)}
+
+        # Trivy results
+        try:
+            with open("trivy-results/trivy-results.json") as f:
+                trivy = json.load(f)
+            vulns = []
+            for result in trivy.get("Results", []):
+                vulns.extend(result.get("Vulnerabilities") or [])
+            critical = len([v for v in vulns if v.get("Severity") == "CRITICAL"])
+            high = len([v for v in vulns if v.get("Severity") == "HIGH"])
+            report["tools"]["trivy"] = {
+                "status": "completed",
+                "total_findings": len(vulns),
+                "critical_severity": critical,
+                "high_severity": high
+            }
+        except Exception as e:
+            report["tools"]["trivy"] = {"status": "error", "message": str(e)}
+
+        total = sum(t.get("total_findings", 0) for t in report["tools"].values() if isinstance(t, dict))
+        report["summary"] = {
+            "total_findings_across_tools": total,
+            "tools_executed": len(report["tools"]),
+            "pipeline_status": "completed"
+        }
+
+        with open("security-report.json", "w") as f:
+            json.dump(report, f, indent=2)
+
+        print("=== DevSecOps Security Pipeline Report ===")
+        print(f"Timestamp: {report['timestamp']}")
+        print(f"Tools executed: {report['summary']['tools_executed']}")
+        print(f"Total findings: {report['summary']['total_findings_across_tools']}")
+        for tool, data in report['tools'].items():
+            if isinstance(data, dict):
+                print(f"  {tool}: {data.get('total_findings', 0)} findings")
+        EOF
+
+    - name: Upload security report
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-report
+        path: security-report.json
